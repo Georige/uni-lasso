@@ -1,6 +1,6 @@
 # UniLasso: Univariate-Guided Sparse Regression
 
-UniLasso is a Python package that implements a novel and interpretable approach to sparse regression corresponding to the preprint Univariate-Guided Sparse Regression (https://arxiv.org/abs/2501.18360).
+UniLasso is a Python package that implements a novel and interpretable approach to sparse regression corresponding to **Univariate-Guided Sparse Regression** (https://hdsr.mitpress.mit.edu/pub/3i97j340/release/4).
 
 
 ## Features
