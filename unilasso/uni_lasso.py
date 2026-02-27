@@ -828,3 +828,376 @@ def predict(result: UniLassoResult,
     y_hat = y_hat.squeeze()
           
     return y_hat
+
+
+
+
+import numpy as np
+import torch
+from typing import Optional, Callable
+# 假设已经导入了 _format_output, _prepare_unilasso_input, UniLassoCVResult 等原有函数
+
+class PyTorchGrpnetAdapter:
+    """
+    严肃工程实现：适配器模式。
+    作用：将 PyTorch 计算出的权重矩阵和截距数组，包装成类似 ad.grpnet 的对象接口。
+    """
+    def __init__(self, betas_matrix: np.ndarray, intercepts_array: np.ndarray, lmdas: np.ndarray):
+        # 参数 betas_matrix: 形状为 (n_lmdas, n_features) 的特征系数矩阵
+        # 参数 intercepts_array: 形状为 (n_lmdas,) 的截距数组
+        self._betas = betas_matrix
+        self.intercepts = intercepts_array
+        self.lmdas = lmdas
+
+    @property
+    def betas(self):
+        """
+        模拟 adelie 中稀疏矩阵的 .toarray() 方法。
+        返回一个具有 toarray 方法的内部匿名类，巧妙满足 _format_output 的调用链。
+        """
+        class MockSparseMatrix:
+            def __init__(self, mat):
+                self.mat = mat
+            def toarray(self):
+                return self.mat
+                
+        return MockSparseMatrix(self._betas)
+    
+    
+def _fit_pytorch_lasso_path(
+X_train: np.ndarray, 
+y_train: np.ndarray, 
+lmdas: np.ndarray, 
+negative_penalty: float,
+fit_intercept: bool = True
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    沿着正则化路径 (lambda_path) 训练模型，利用 Warm Start 加速收敛。
+    """
+    X_t = torch.tensor(X_train, dtype=torch.float32)
+    y_t = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
+    
+    n_features = X_train.shape[1]
+    n_lmdas = len(lmdas)
+    
+    # 预分配结果存储空间
+    betas_matrix = np.zeros((n_lmdas, n_features))
+    intercepts_array = np.zeros(n_lmdas)
+    
+    # 初始化可训练参数
+    weights = torch.zeros((n_features, 1), dtype=torch.float32, requires_grad=True)
+    bias = torch.zeros(1, dtype=torch.float32, requires_grad=True)
+    optimizer = torch.optim.Adam([weights, bias], lr=0.01)
+    
+    for i, lmda in enumerate(lmdas):
+        # 针对当前的 lambda 进行梯度下降更新 (利用了上一轮的 weights 作为起点)
+        for _ in range(500): 
+            optimizer.zero_grad()
+            y_pred = torch.matmul(X_t, weights)
+            if fit_intercept:
+                y_pred += bias
+                
+            mse_loss = torch.mean((y_pred - y_t) ** 2)
+            l1_penalty = lmda * torch.sum(torch.abs(weights))
+            neg_penalty = negative_penalty * torch.sum(torch.relu(-weights))
+            
+            loss = mse_loss + l1_penalty + neg_penalty
+            loss.backward()
+            optimizer.step()
+            
+        # 记录当前 lambda 训练完毕的参数
+        betas_matrix[i, :] = weights.detach().numpy().flatten()
+        intercepts_array[i] = bias.detach().item() if fit_intercept else 0.0
+        
+    return betas_matrix, intercepts_array
+
+
+from sklearn.model_selection import KFold
+import matplotlib.pyplot as plt
+
+def cv_uni(
+    X: np.ndarray,
+    y: np.ndarray,
+    family: str = "gaussian",
+    n_folds: int = 5,
+    lmdas: Optional[np.ndarray] = None,
+    lmda_min_ratio: Optional[float] = None,
+    negative_penalty: float = 1.0,
+    verbose: bool = False,
+    seed: Optional[int] = None
+) -> UniLassoCVResult:
+    """
+    创新版 UniLasso：返回标准 UniLassoCVResult，支持自定义负系数惩罚。
+    """
+    if family != "gaussian":
+        raise ValueError("PyTorch 自定义后端目前仅实现了 gaussian 家族。")
+
+    # 1. 严格复用原版的数据准备逻辑，获取至关重要的 loo_fits
+    # _prepare_unilasso_input 会处理 zero variance 特征，并计算 loo_fits
+    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, _, original_lmdas, zero_var_idx = _prepare_unilasso_input(X, y, family, lmdas)
+    
+    fit_intercept = False if family == "cox" else True
+
+    # 如果用户没有提供正则化路径，生成一个（简化的示例路径）
+    if original_lmdas is None:
+        lambda_max = np.max(np.abs(loo_fits.T @ y)) / len(y)
+        lmda_min_ratio = lmda_min_ratio or 1e-4
+        lambda_path = np.exp(np.linspace(np.log(lambda_max), np.log(lambda_max * lmda_min_ratio), 100))
+    else:
+        lambda_path = original_lmdas
+
+    # 2. 交叉验证过程 (模拟 cv_grpnet)
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    avg_losses = np.zeros(len(lambda_path))
+    
+    # 模拟交叉验证计算 avg_losses (工程上，这用于选择最佳超参数)
+    for train_idx, val_idx in kf.split(loo_fits):
+        X_train, X_val = loo_fits[train_idx], loo_fits[val_idx]
+        y_train, y_val = y[train_idx], y[val_idx]
+        
+        b_mat, int_arr = _fit_pytorch_lasso_path(X_train, y_train, lambda_path, negative_penalty, fit_intercept)
+        
+        for i in range(len(lambda_path)):
+            preds = X_val @ b_mat[i] + int_arr[i]
+            avg_losses[i] += np.mean((preds - y_val) ** 2) / n_folds
+
+    best_idx = int(np.argmin(avg_losses))
+    best_lmda = lambda_path[best_idx]
+
+    # 3. 在全量 LOO 特征上进行最终拟合
+    final_betas, final_intercepts = _fit_pytorch_lasso_path(loo_fits, y, lambda_path, negative_penalty, fit_intercept)
+    
+    # 将最终结果装入我们的适配器
+    adapter_model = PyTorchGrpnetAdapter(final_betas, final_intercepts, lambda_path)
+
+    # 4. 调用原生格式化函数，将基础的权重转换为 UniLasso 实际需要的 gamma 和 beta
+    gamma_hat, gamma_0, beta_coefs = _format_output(
+        lasso_model=adapter_model,
+        beta_coefs_fit=beta_coefs_fit,
+        beta_intercepts=beta_intercepts,
+        zero_var_idx=zero_var_idx,
+        X=X,
+        fit_intercept=fit_intercept
+    )
+
+    # 定义一个伪装的可视化函数，满足 cv_plot 的 Callable 签名
+    def mock_cv_plot():
+        plt.plot(np.log(lambda_path), avg_losses)
+        plt.xlabel("Log(Lambda)")
+        plt.ylabel("CV MSE Loss")
+        plt.title("Custom UniLasso CV Plot")
+        plt.show()
+
+    if verbose:
+        _print_unilasso_results(gamma_hat, lambda_path, best_idx)
+        mock_cv_plot()
+
+    # 5. 返回原汁原味的 UniLassoCVResult
+    result = UniLassoCVResult(
+        coefs=gamma_hat,
+        intercept=gamma_0,
+        family=family,
+        gamma=gamma_hat,
+        gamma_intercept=gamma_0,
+        beta=beta_coefs,
+        beta_intercepts=beta_intercepts,
+        lasso_model=adapter_model,  # 传入我们的适配器！
+        lmdas=lambda_path,
+        avg_losses=avg_losses,
+        cv_plot=mock_cv_plot,
+        best_idx=best_idx,
+        best_lmda=best_lmda
+    )
+
+    return result
+
+
+
+from typing import List, Optional, Union
+import numpy as np
+
+# 假设已经导入了 _prepare_unilasso_input, _format_output, _print_unilasso_results, UniLassoResult
+# 以及我们之前编写的 _fit_pytorch_lasso_path 和 PyTorchGrpnetAdapter
+
+def fit_uni(
+    X: np.ndarray,
+    y: np.ndarray,
+    family: str = "gaussian",
+    lmdas: Optional[Union[float, List[float], np.ndarray]] = None,
+    n_lmdas: Optional[int] = 100,
+    lmda_min_ratio: Optional[float] = 1e-2,
+    negative_penalty: float = 1.0,  # 创新点：暴露软惩罚参数
+    verbose: bool = False
+) -> UniLassoResult:
+    """
+    创新版单变量引导 Lasso 回归 (fit_uni)。
+    在指定的正则化路径上拟合模型，支持对负系数的自定义软惩罚。
+    """
+    # 1. 前置校验：目前我们的自定义梯度下降仅实现了高斯分布 (线性回归)
+    if family != "gaussian":
+        raise ValueError("PyTorch 自定义后端目前仅实现了 gaussian 家族。")
+
+    # 2. 数据准备与预处理
+    # 这一步极其关键，它内部执行了对各个特征的单变量回归，提取出了 loo_fits
+    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, _, original_lmdas, zero_var_idx = _prepare_unilasso_input(X, y, family, lmdas)
+
+    fit_intercept = False if family == "cox" else True
+
+    # 3. 确定正则化路径 (Lambda Path)
+    if original_lmdas is not None:
+        # 如果用户指定了 lmdas，为了热启动 (Warm Start) 的有效性，
+        # 我们必须确保 Lambda 是从大到小降序排列的。
+        lambda_path = np.sort(np.array(original_lmdas))[::-1]
+    else:
+        # 如果未指定，自动计算理论上的最大 Lambda (使得所有系数刚好被压缩为 0 的临界值)
+        # 并基于 lmda_min_ratio 在对数尺度上生成路径
+        lambda_max = np.max(np.abs(loo_fits.T @ y)) / len(y)
+        lmda_min_ratio = lmda_min_ratio or 1e-2
+        lambda_path = np.exp(np.linspace(np.log(lambda_max), np.log(lambda_max * lmda_min_ratio), n_lmdas))
+
+    # 4. 调用核心 PyTorch 求解器
+    # 充分复用我们在 cv_uni 中编写的底层逻辑！
+    betas_matrix, intercepts_array = _fit_pytorch_lasso_path(
+        X_train=loo_fits, 
+        y_train=y, 
+        lmdas=lambda_path, 
+        negative_penalty=negative_penalty, 
+        fit_intercept=fit_intercept
+    )
+
+    # 5. 适配器模式启动
+    # 将 NumPy 矩阵伪装成 adelie 的底层 C++ 对象，以便骗过 _format_output
+    adapter_model = PyTorchGrpnetAdapter(betas_matrix, intercepts_array, lambda_path)
+
+    # 6. 参数还原与格式化
+    # 原版代码中这里传入了 reverse_indices，
+    # 但因为我们的 PyTorch 路径完全受控，并已经按照 lambda_path 严格对齐，所以这里无需 reverse。
+    gamma_hat, gamma_0, beta_coefs = _format_output(
+        lasso_model=adapter_model,
+        beta_coefs_fit=beta_coefs_fit,
+        beta_intercepts=beta_intercepts,
+        zero_var_idx=zero_var_idx,
+        X=X,
+        fit_intercept=fit_intercept,
+        reverse_indices=None  # 架构细节改动点
+    )
+
+    if verbose:
+        _print_unilasso_results(gamma_hat, lambda_path)
+
+    # 7. 返回标准结果对象
+    # 这确保了 `predict` 等下游方法可以无缝接入这个结果
+    unilasso_result = UniLassoResult(
+        coefs=gamma_hat,
+        intercept=gamma_0,
+        family=family,
+        gamma=gamma_hat,
+        gamma_intercept=gamma_0,
+        beta=beta_coefs,
+        beta_intercepts=beta_intercepts,
+        lasso_model=adapter_model,  # 传入适配器
+        lmdas=lambda_path
+    )
+
+    return unilasso_result
+
+def plot_uni(unilasso_fit) -> None:
+    """
+    创新版 Lasso 路径可视化。
+    使用行业标准 -log(lambda) 作为横轴，使得从左到右代表模型复杂度增加（正则化减弱）。
+    """
+    assert hasattr(unilasso_fit, "coefs") and hasattr(unilasso_fit, "lmdas"), \
+        "Input must have 'coefs' and 'lmdas' attributes."
+
+    coefs, lambdas = unilasso_fit.coefs, unilasso_fit.lmdas
+    
+    if coefs.ndim == 1 or len(lambdas) == 1:
+        print("Only one regularization parameter was used. No path to plot.")
+        return
+
+    plt.figure(figsize=(8, 6))
+    
+    # --- 核心改动点 ---
+    # 改为使用 -log(lambda)，这是业界更通用的做法
+    neg_log_lambdas = -np.log(lambdas) 
+
+    # Compute the number of nonzero coefficients at each lambda
+    n_nonzero = np.sum(coefs != 0, axis=1)
+
+    # Plot coefficient paths
+    for i in range(coefs.shape[1]):  
+        plt.plot(neg_log_lambdas, coefs[:, i], lw=2)
+
+    # --- 标签更新 ---
+    plt.xlabel(r"$-\log(\lambda)$", fontsize=12)  # 更新 LaTeX 标签
+    plt.ylabel("Coefficients", fontsize=12)
+    plt.axhline(0, color='black', linestyle='--', linewidth=1)
+
+    # 添加顶部的第二 X 轴（用于显示非零特征数量）
+    ax1 = plt.gca()  
+    ax2 = ax1.twiny()  
+    ax2.set_xlim(ax1.get_xlim())  
+    
+    # 动态计算刻度，保持美观
+    tick_indices = np.linspace(0, len(neg_log_lambdas) - 1, min(6, len(neg_log_lambdas)), dtype=int)
+    ax2.set_xticks(neg_log_lambdas[tick_indices])  
+    ax2.set_xticklabels(n_nonzero[tick_indices]) 
+    
+    ax2.set_xlabel("Number of Active Coefficients", fontsize=12)
+
+    plt.show()
+    
+    
+def plot_cv_uni(cv_result) -> None:
+    """
+    创新版交叉验证损失曲线可视化。
+    彻底接管绘图逻辑，使用 -log(lambda) 作为横轴，并高亮最佳参数点。
+    """
+    # 1. 前置契约校验 (Contract Check)
+    assert hasattr(cv_result, "lmdas") and hasattr(cv_result, "avg_losses"), \
+        "输入对象必须包含 'lmdas' 和 'avg_losses' 属性"
+    
+    # 2. 从对象中提取原始数据 (打破原先的黑盒调用机制)
+    lambdas = cv_result.lmdas
+    avg_losses = cv_result.avg_losses
+    best_lmda = cv_result.best_lmda
+    
+    # --- 核心改动：转换为 -log ---
+    neg_log_lambdas = -np.log(lambdas)
+    
+    plt.figure(figsize=(8, 6))
+    
+    # 绘制交叉验证平均损失曲线
+    plt.plot(
+        neg_log_lambdas, 
+        avg_losses, 
+        marker='o', 
+        linestyle='-', 
+        color='royalblue', 
+        markersize=5, 
+        linewidth=2,
+        label='CV MSE Loss'
+    )
+    
+    # --- 工业级体验增强：标出最佳点 ---
+    if best_lmda is not None:
+        best_neg_log = -np.log(best_lmda)
+        # 获取最佳 lambda 对应的 loss 值用于画点
+        best_idx = cv_result.best_idx
+        best_loss = avg_losses[best_idx]
+        
+        # 画一条垂直虚线辅助对齐
+        plt.axvline(x=best_neg_log, color='crimson', linestyle='--', alpha=0.7, label=f'Best $-\\log(\\lambda)$ = {best_neg_log:.2f}')
+        # 在最低点画一个红星
+        plt.plot(best_neg_log, best_loss, marker='*', color='crimson', markersize=12)
+
+    # 设置符合行业标准的标签
+    plt.xlabel(r"$-\log(\lambda)$", fontsize=12)
+    plt.ylabel("Mean Squared Error (MSE)", fontsize=12)
+    plt.title("Cross-Validation Error Curve", fontsize=14, pad=15)
+    
+    # 优化网格和图例，提升图表可读性
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.legend(loc='best', frameon=True)
+    
+    plt.show()
