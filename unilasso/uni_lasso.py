@@ -872,7 +872,8 @@ X_train: np.ndarray,
 y_train: np.ndarray, 
 lmdas: np.ndarray, 
 negative_penalty: float,
-fit_intercept: bool = True
+fit_intercept: bool = True,
+lr: float = 0.01  # 显式定义学习率，供软阈值使用
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     沿着正则化路径 (lambda_path) 训练模型，利用 Warm Start 加速收敛。
@@ -885,34 +886,45 @@ fit_intercept: bool = True
     
     # 预分配结果存储空间
     betas_matrix = np.zeros((n_lmdas, n_features))
-    intercepts_array = np.zeros(n_lmdas)
+    intercepts = np.zeros(n_lmdas)
     
     # 初始化可训练参数
     weights = torch.zeros((n_features, 1), dtype=torch.float32, requires_grad=True)
     bias = torch.zeros(1, dtype=torch.float32, requires_grad=True)
-    optimizer = torch.optim.Adam([weights, bias], lr=0.01)
+    
+    optimizer = torch.optim.SGD([weights, bias], lr=lr)
+    
     
     for i, lmda in enumerate(lmdas):
         # 针对当前的 lambda 进行梯度下降更新 (利用了上一轮的 weights 作为起点)
         for _ in range(500): 
             optimizer.zero_grad()
-            y_pred = torch.matmul(X_t, weights)
-            if fit_intercept:
-                y_pred += bias
-                
+            # 第一步：只对“平滑部分 (MSE)”计算梯度！
+            y_pred = torch.matmul(X_t, weights) + bias
             mse_loss = torch.mean((y_pred - y_t) ** 2)
-            l1_penalty = lmda * torch.sum(torch.abs(weights))
-            neg_penalty = negative_penalty * torch.sum(torch.nn.functional.softplus(-weights, beta=10))
+            mse_loss.backward()
             
-            loss = mse_loss + l1_penalty + neg_penalty
-            loss.backward()
+            # 走普通梯度下降的一步
             optimizer.step()
             
-        # 记录当前 lambda 训练完毕的参数
+            # 第二步：核心架构升级！你的专属“非对称近端算子 (Asymmetric Proximal)”
+            with torch.no_grad():
+                # 截断不再是粗暴的 clamp，而是基于你设计的惩罚力度的精准数学映射
+                tau_pos = lr * lmda
+                tau_neg = lr * (lmda + negative_penalty)  # 你的创新点在这里发力！
+                
+                # 1. 超过正向阈值：向左拉
+                w_pos = torch.where(weights > tau_pos, weights - tau_pos, torch.zeros_like(weights))
+                # 2. 跌破负向阈值：向右拉
+                w_neg = torch.where(weights < -tau_neg, weights + tau_neg, torch.zeros_like(weights))
+                # 3. 落在宽阔的“死亡之谷”：变为绝对的 0
+                
+                # 更新权重
+                weights.copy_(w_pos + w_neg)
+
         betas_matrix[i, :] = weights.detach().numpy().flatten()
-        intercepts_array[i] = bias.detach().item() if fit_intercept else 0.0
-        
-    return betas_matrix, intercepts_array
+        intercepts[i] = bias.detach().item()
+    return betas_matrix, intercepts
 
 
 from sklearn.model_selection import KFold
