@@ -1,0 +1,14 @@
+LICENSE
+README.md
+setup.py
+tests/test_unilasso.py
+unilasso/__init__.py
+unilasso/config.py
+unilasso/uni_lasso.py
+unilasso/univariate_regression.py
+unilasso/utils.py
+unilasso.egg-info/PKG-INFO
+unilasso.egg-info/SOURCES.txt
+unilasso.egg-info/dependency_links.txt
+unilasso.egg-info/requires.txt
+unilasso.egg-info/top_level.txt

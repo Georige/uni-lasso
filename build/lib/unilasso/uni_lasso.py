@@ -419,8 +419,8 @@ def _prepare_unilasso_input(
                 X: np.ndarray, 
                 y: np.ndarray, 
                 family: str, 
-                lmdas: Optional[Union[float, List[float], np.ndarray]],
-                choice: bool = False) -> Tuple[np.ndarray, 
+                lmdas: Optional[Union[float, List[float], np.ndarray]]
+) -> Tuple[np.ndarray, 
            np.ndarray,
            np.ndarray,
            np.ndarray, 
@@ -441,12 +441,8 @@ def _prepare_unilasso_input(
     
     # 施加非负约束
     # ￥取消限制
-    if choice:
-        constraints = None # ￥my version choice = True
-    else:
-        # choice = False
-        constraints = [ad.constraint.lower(b=np.zeros(1)) for _ in range(X.shape[1])]
-    
+    # constraints = [ad.constraint.lower(b=np.zeros(1)) for _ in range(X.shape[1])]
+    constraints = None
     return X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, constraints, lmdas, zero_var_idx
 
 
@@ -750,50 +746,6 @@ class CustomSoftPenaltyCVLasso:
         # 4. 找到成绩最好（误差最小）的那个 lambda 的索引！
         self.best_idx = np.argmin(self.avg_losses)
 
-    def cv_plot(self):
-        """
-        绘制 K-Fold 交叉验证的平均误差 (Mean CV Loss) 曲线。
-        帮助用户直观地寻找最佳的正则化强度 (Lambda)。
-        """
-        import matplotlib.pyplot as plt
-        import numpy as np
-        
-        # 1. 架构师的防呆校验：确保用户已经跑过训练了
-        if getattr(self, 'avg_losses', None) is None:
-            raise ValueError("CV Loss data not found! Please ensure _run_cv() has executed.")
-
-        plt.figure(figsize=(10, 6))
-        
-        # 2. 核心数据准备：统计学中通常使用 log(lambda) 作为 X 轴
-        log_lmdas = np.log(self.lmdas)
-        
-        # 3. 绘制主曲线：每个 lambda 对应的平均测试误差
-        plt.plot(log_lmdas, self.avg_losses, 'b.-', linewidth=2, markersize=8, 
-                 label=f'{self.n_folds}-Fold CV Mean Loss')
-        
-        # 4. 视觉高光：用红色的星星精准标出“谷底”（最优模型）
-        best_log_lmda = log_lmdas[self.best_idx]
-        min_loss = self.avg_losses[self.best_idx]
-        
-        plt.plot(best_log_lmda, min_loss, 'r*', markersize=18, zorder=5, 
-                 label=f'Optimal $\lambda$ (Loss: {min_loss:.4f})')
-        
-        # 画一条垂直的红色虚线，方便肉眼对齐 X 轴
-        plt.axvline(best_log_lmda, color='red', linestyle='--', alpha=0.5)
-
-        # 5. X 轴翻转：让最大的惩罚在左边，最小的惩罚在右边（符合由简入繁的直觉）
-        plt.xlim(max(log_lmdas), min(log_lmdas))
-
-        # 6. 图表精装修
-        plt.xlabel(r'$\log(\lambda)$ (Regularization Strength)', fontsize=14)
-        plt.ylabel('Mean Squared Error (MSE)', fontsize=14)
-        plt.title('K-Fold Cross-Validation Loss Curve', fontsize=16)
-        
-        plt.legend(fontsize=12)
-        plt.grid(True, linestyle=':', alpha=0.7)
-        plt.tight_layout()
-        plt.show()
-    
     def fit(self, X, glm=None, groups=None, intercept=True, constraints=None):
         """
         这个方法极其重要！
@@ -848,34 +800,34 @@ def cv_unilasso( # 封装所有东西，融合所有东西的类
     _check_lmda_min_ratio(lmda_min_ratio)
     
     # 得到单变量模型的食材
-    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, constraints, _, zero_var_idx = _prepare_unilasso_input(X, y, family, None,choice=False)
+    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, constraints, _, zero_var_idx = _prepare_unilasso_input(X, y, family, None)
     fit_intercept = False if family == "cox" else True
 
     
-    # lmdas = _configure_lmda_path(X=loo_fits, y=y, family=family, 
-    #                              n_lmdas=100, lmda_min_ratio=lmda_min_ratio)
+    lmdas = _configure_lmda_path(X=loo_fits, y=y, family=family, 
+                                 n_lmdas=100, lmda_min_ratio=lmda_min_ratio)
     
     
-    cv_lasso = ad.cv_grpnet(
-        X=loo_fits, # LOO拟合值
-        glm=glm_family,
-        seed=seed,
-        n_folds=n_folds,
-        groups=None,
-        min_ratio=lmda_min_ratio,
-        intercept=fit_intercept,
-        constraints=constraints,
-        tol=1e-7
-    )
-    
-    # cv_lasso = CustomSoftPenaltyCVLasso(
-    #     X=loo_fits, 
-    #     y=y, 
-    #     lmdas=lmdas, 
-    #     n_folds=n_folds, 
-    #     alpha_penalty=50.0, # 沼泽地的深度
-    #     seed=seed
+    # cv_lasso = ad.cv_grpnet(
+    #     X=loo_fits, # LOO拟合值
+    #     glm=glm_family,
+    #     seed=seed,
+    #     n_folds=n_folds,
+    #     groups=None,
+    #     min_ratio=lmda_min_ratio,
+    #     intercept=fit_intercept,
+    #     constraints=constraints,
+    #     tol=1e-7
     # )
+    
+    cv_lasso = CustomSoftPenaltyCVLasso(
+        X=loo_fits, 
+        y=y, 
+        lmdas=lmdas, 
+        n_folds=n_folds, 
+        alpha_penalty=50.0, # 沼泽地的深度
+        seed=seed
+    )
 
     # refit lasso along a regularization path that stops at the best chosen lambda
     lasso_model = cv_lasso.fit( # 寻找最优参数，然后用全数据训练一次
@@ -920,112 +872,6 @@ def cv_unilasso( # 封装所有东西，融合所有东西的类
     return unilasso_result
 
 
-# my version
-def cv_uni( # 封装所有东西，融合所有东西的类
-            X: np.ndarray,
-            y: np.ndarray,
-            family: str = "gaussian",
-            n_folds: int = 5,
-            lmda_min_ratio: float = None,
-            verbose: bool = False,
-            seed: Optional[int] = None
-) ->  UniLassoCVResult:
-    """
-    Perform cross-validation UniLasso.
-
-    Args:
-        X: Feature matrix of shape (n, p).
-        y: Response vector of shape (n,).
-        family: Family of the response variable ('gaussian', 'binomial', 'cox').
-        n_folds: Number of cross-validation folds.
-        lmda_min_ratio: Minimum ratio of the largest to smallest regularization parameter.
-        verbose: Whether to print results.
-        seed: Random seed for reproducibility.
-
-    Returns:
-        Dictionary containing UniLasso results.
-    """
-    if lmda_min_ratio is None:
-        lmda_min_ratio = _configure_lmda_min_ratio(X.shape[0], X.shape[1])
-
-    assert n_folds > 1, "Number of folds must be greater than 1."
-    _check_lmda_min_ratio(lmda_min_ratio)
-    
-    # 得到单变量模型的食材
-    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, constraints, _, zero_var_idx = _prepare_unilasso_input(X, y, family, None,choice=True)
-    fit_intercept = False if family == "cox" else True
-
-    
-    lmdas = _configure_lmda_path(X=loo_fits, y=y, family=family, 
-                                 n_lmdas=100, lmda_min_ratio=lmda_min_ratio)
-    
-    
-    # cv_lasso = ad.cv_grpnet(
-    #     X=loo_fits, # LOO拟合值
-    #     glm=glm_family,
-    #     seed=seed,
-    #     n_folds=n_folds,
-    #     groups=None,
-    #     min_ratio=lmda_min_ratio,
-    #     intercept=fit_intercept,
-    #     constraints=constraints,
-    #     tol=1e-7
-    # )
-    
-    cv_lasso = CustomSoftPenaltyCVLasso(
-        X=loo_fits, 
-        y=y, 
-        lmdas=lmdas, 
-        n_folds=n_folds, 
-        alpha_penalty=50.0, # 沼泽地的深度
-        seed=seed
-    )
-    
-    cv_lasso.plot_loss()
-    cv_lasso.cv_plot()
-
-    # refit lasso along a regularization path that stops at the best chosen lambda
-    lasso_model = cv_lasso.fit( # 寻找最优参数，然后用全数据训练一次
-        X=loo_fits,
-        glm=glm_family,
-        groups=None,
-        intercept=fit_intercept,
-        constraints=constraints,
-    )
-
-    gamma_hat, gamma_0, beta_coefs = _format_output(lasso_model, # 整理全局模型的输出
-                                                    beta_coefs_fit,
-                                                    beta_intercepts,
-                                                    zero_var_idx,
-                                                    X,
-                                                    fit_intercept)
-
-    
-
-    cv_plot = cv_lasso.cv_plot()
-    if verbose:
-        _print_unilasso_results(gamma_hat, cv_lasso.lmdas, int(cv_lasso.best_idx))
-        cv_plot()
-    
-
-    unilasso_result = UniLassoCVResult(
-        coefs=gamma_hat,
-        intercept=gamma_0,
-        family=family,
-        gamma=gamma_hat,
-        gamma_intercept=gamma_0,
-        beta=beta_coefs,
-        beta_intercepts=beta_intercepts,
-        lasso_model=lasso_model,
-        lmdas=cv_lasso.lmdas,
-        avg_losses=cv_lasso.avg_losses,
-        cv_plot=cv_plot,
-        best_idx=int(cv_lasso.best_idx),
-        best_lmda=cv_lasso.lmdas[cv_lasso.best_idx]
-    ) # 返回一个结果，甚至可以画图
-
-    return unilasso_result
-
 # ------------------------------------------------------------------------------
 # Fit UniLasso for a specified regularization path
 # ------------------------------------------------------------------------------
@@ -1054,108 +900,7 @@ def fit_unilasso( # 如果没有lambda传入，直接使用最优训练误差，
         Dictionary containing UniLasso results.
     """
     # 输出单变量模型
-    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, constraints, lmdas, zero_var_idx = _prepare_unilasso_input(X, y, family, lmdas,choice=False)
-
-    fit_intercept = False if family == "cox" else True
-
-    # 拟合lasso模型，但是没有做cv，只跑一次全量数据，速度会快很多
-    lasso_model = ad.grpnet(
-        X=loo_fits,
-        glm=glm_family,
-        groups=None,
-        intercept=fit_intercept,
-        lmda_path=lmdas, # Regularization path, if unspecified, will be generated 如果没有制定lambda，会自动生成一个lambda
-        constraints=constraints,
-        lmda_path_size=n_lmdas,
-        min_ratio=lmda_min_ratio,
-        tol=1e-7
-    )
-    
-    # if lmdas is None:
-    #     # 调用系统自带的路线生成器
-    #     lmdas = _configure_lmda_path(X=loo_fits, 
-    #                                  y=y, 
-    #                                  family=family, 
-    #                                  n_lmdas=n_lmdas, 
-    #                                  lmda_min_ratio=lmda_min_ratio)
-    # lasso_model = CustomSoftPenaltyLasso(
-    #     X=loo_fits, 
-    #     y=y, 
-    #     lmda_path=lmdas, 
-    #     alpha_penalty=50.0 # 沼泽地的深度，你可以自己调
-    # )
-
-    glm_lmdas = np.array(lasso_model.lmdas)
-    lmdas = glm_lmdas
-
-    # if lmdas is not None: # 如果没有制定lambda，会自动跑一百个lambda，然后选择最优的
-    #     if not np.all(np.isin(lmdas, glm_lmdas)):
-    #         removed_lmdas = np.setdiff1d(lmdas, glm_lmdas)
-    #         removed_lmdas = np.round(removed_lmdas, 3)
-    #         warn_removed_lmdas(removed_lmdas)
-
-    #     matching_idx = np.where(np.isin(lmdas, glm_lmdas))[0]
-    #     lmdas = lmdas[matching_idx]
-
-    if len(lmdas) == 0:
-        raise ValueError("No regularization strengths remain after removing invalid values")
-
-    reverse_indices = np.arange(len(glm_lmdas))
-    reverse_indices = reverse_indices[::-1]
-
-
-    gamma_hat, gamma_0, beta_coefs = _format_output(lasso_model,
-                                                    beta_coefs_fit,
-                                                    beta_intercepts,
-                                                    zero_var_idx,
-                                                    X,
-                                                    fit_intercept,
-                                                    reverse_indices)
-
-    if verbose:
-        _print_unilasso_results(gamma_hat, lmdas)
-
-    unilasso_result = UniLassoResult(
-        coefs=gamma_hat,
-        intercept=gamma_0,
-        family=family,
-        gamma=gamma_hat,
-        gamma_intercept=gamma_0,
-        beta=beta_coefs,
-        beta_intercepts=beta_intercepts,
-        lasso_model=lasso_model,
-        lmdas=lmdas
-    )
-
-    return unilasso_result
-
-# my version
-def fit_uni( # 如果没有lambda传入，直接使用最优训练误差，榨干每一点数据
-            X: np.ndarray,
-            y: np.ndarray,
-            family: str = "gaussian",
-            lmdas: Optional[Union[float, List[float], np.ndarray]] = None,
-            n_lmdas: Optional[int] = 100,
-            lmda_min_ratio: Optional[float] = 1e-2,
-            verbose: bool = False
-) -> UniLassoResult:
-    """
-    Perform UniLasso with specified regularization parameters.
-
-    Args:
-        X: Feature matrix of shape (n, p).
-        y: Response vector of shape (n,).
-        family: Family of the response variable ('gaussian', 'binomial', 'cox').
-        lmdas: Lasso regularization parameter(s).
-        n_lmdas: Number of regularization parameters to use if `lmdas` is None.
-        lmda_min_ratio: Minimum ratio of the largest to smallest regularization parameter. 
-        verbose: Whether to print results.
-
-    Returns:
-        Dictionary containing UniLasso results.
-    """
-    # 输出单变量模型
-    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, constraints, lmdas, zero_var_idx = _prepare_unilasso_input(X, y, family, lmdas,choice=True)
+    X, y, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, constraints, lmdas, zero_var_idx = _prepare_unilasso_input(X, y, family, lmdas)
 
     fit_intercept = False if family == "cox" else True
 
@@ -1187,18 +932,16 @@ def fit_uni( # 如果没有lambda传入，直接使用最优训练误差，榨�
 
     glm_lmdas = np.array(lasso_model.lmdas)
 
-    
-    
-    # if lmdas is not None: # 如果没有制定lambda，会自动跑一百个lambda，然后选择最优的
-    #     if not np.all(np.isin(lmdas, glm_lmdas)):
-    #         removed_lmdas = np.setdiff1d(lmdas, glm_lmdas)
-    #         removed_lmdas = np.round(removed_lmdas, 3)
-    #         warn_removed_lmdas(removed_lmdas)
+    if lmdas is not None: # 如果没有制定lambda，会自动跑一百个lambda，然后选择最优的
+        if not np.all(np.isin(lmdas, glm_lmdas)):
+            removed_lmdas = np.setdiff1d(lmdas, glm_lmdas)
+            removed_lmdas = np.round(removed_lmdas, 3)
+            warn_removed_lmdas(removed_lmdas)
 
-    #     matching_idx = np.where(np.isin(lmdas, glm_lmdas))[0]
-    #     lmdas = lmdas[matching_idx]
-    # else:
-    #     lmdas = glm_lmdas
+        matching_idx = np.where(np.isin(lmdas, glm_lmdas))[0]
+        lmdas = lmdas[matching_idx]
+    else:
+        lmdas = glm_lmdas
 
     if len(lmdas) == 0:
         raise ValueError("No regularization strengths remain after removing invalid values")
@@ -1231,8 +974,6 @@ def fit_uni( # 如果没有lambda传入，直接使用最优训练误差，榨�
     )
 
     return unilasso_result
-
-
 
 
 def predict(result: UniLassoResult,

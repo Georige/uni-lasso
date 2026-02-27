@@ -4,7 +4,7 @@ __all__ = ["fit_unilasso", "fit_loo_univariate_models"]
 from .uni_lasso import fit_unilasso, cv_unilasso, predict, extract_cv, plot, plot_cv
 from .univariate_regression import fit_loo_univariate_models
 from .utils import setup_warnings, simulate_gaussian_data, simulate_binomial_data, simulate_cox_data
-from .uni_lasso import fit_uni, cv_uni
+
 
 setup_warnings()
 
@@ -18,7 +18,7 @@ __all__ = ['fit_unilasso', 'cv_unilasso', 'extract_cv', 'plot',
            'plot_cv',
            'predict',
            'fit_loo_univariate_models',
-           'simulate_gaussian_data', 'simulate_binomial_data', 'simulate_cox_data','fit_uni','cv_uni']
+           'simulate_gaussian_data', 'simulate_binomial_data', 'simulate_cox_data']
 
 
 # Package metadata

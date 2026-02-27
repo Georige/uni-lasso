@@ -1,0 +1,12 @@
+numpy
+pandas
+numba
+adelie
+matplotlib
+colorama
+pytest
+
+[dev]
+pytest
+flake8
+black
