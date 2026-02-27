@@ -477,6 +477,8 @@ def _configure_lmda_min_ratio(n: int,
     return 0.01 if n < p else 1e-4
 
 
+
+
 def _check_lmda_min_ratio(lmda_min_ratio: float) -> float:
     """Check lambda min ratio for UniLasso."""
     if lmda_min_ratio <= 0:
@@ -526,6 +528,7 @@ def _configure_lmda_path(X: np.ndarray,
 
 
 
+
 # ------------------------------------------------------------------------------
 # Perform cross-validation UniLasso
 # ------------------------------------------------------------------------------
@@ -551,7 +554,7 @@ def plot(unilasso_fit) -> None:
     if coefs.ndim == 1 or len(lambdas) == 1:
         print("Only one regularization parameter was used. No path to plot.")
         return
-
+    print(lambdas)
     plt.figure(figsize=(8, 6))
     log_lambdas = np.log(lambdas)  # Convert lambda values to log scale
 
@@ -899,7 +902,7 @@ fit_intercept: bool = True
                 
             mse_loss = torch.mean((y_pred - y_t) ** 2)
             l1_penalty = lmda * torch.sum(torch.abs(weights))
-            neg_penalty = negative_penalty * torch.sum(torch.relu(-weights))
+            neg_penalty = negative_penalty * torch.sum(torch.nn.functional.softplus(-weights, beta=10))
             
             loss = mse_loss + l1_penalty + neg_penalty
             loss.backward()
@@ -921,8 +924,9 @@ def cv_uni(
     family: str = "gaussian",
     n_folds: int = 5,
     lmdas: Optional[np.ndarray] = None,
+    n_lmdas: int = 100,
     lmda_min_ratio: Optional[float] = None,
-    negative_penalty: float = 1.0,
+    negative_penalty: float = 10.0,
     verbose: bool = False,
     seed: Optional[int] = None
 ) -> UniLassoCVResult:
@@ -939,12 +943,16 @@ def cv_uni(
     fit_intercept = False if family == "cox" else True
 
     # 如果用户没有提供正则化路径，生成一个（简化的示例路径）
-    if original_lmdas is None:
-        lambda_max = np.max(np.abs(loo_fits.T @ y)) / len(y)
-        lmda_min_ratio = lmda_min_ratio or 1e-4
-        lambda_path = np.exp(np.linspace(np.log(lambda_max), np.log(lambda_max * lmda_min_ratio), 100))
+    if original_lmdas is not None:
+        lambda_path = np.sort(np.array(original_lmdas))[::-1]
     else:
-        lambda_path = original_lmdas
+        lambda_path = _configure_lmda_path(
+            X=loo_fits, 
+            y=y, 
+            family=family, 
+            n_lmdas=n_lmdas, 
+            lmda_min_ratio=lmda_min_ratio
+        )
 
     # 2. 交叉验证过程 (模拟 cv_grpnet)
     kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
@@ -1026,7 +1034,7 @@ def fit_uni(
     lmdas: Optional[Union[float, List[float], np.ndarray]] = None,
     n_lmdas: Optional[int] = 100,
     lmda_min_ratio: Optional[float] = 1e-2,
-    negative_penalty: float = 1.0,  # 创新点：暴露软惩罚参数
+    negative_penalty: float = 10.0,  # 创新点：暴露软惩罚参数
     verbose: bool = False
 ) -> UniLassoResult:
     """
@@ -1051,9 +1059,13 @@ def fit_uni(
     else:
         # 如果未指定，自动计算理论上的最大 Lambda (使得所有系数刚好被压缩为 0 的临界值)
         # 并基于 lmda_min_ratio 在对数尺度上生成路径
-        lambda_max = np.max(np.abs(loo_fits.T @ y)) / len(y)
-        lmda_min_ratio = lmda_min_ratio or 1e-2
-        lambda_path = np.exp(np.linspace(np.log(lambda_max), np.log(lambda_max * lmda_min_ratio), n_lmdas))
+        lambda_path = _configure_lmda_path(
+                    X=loo_fits,       # 关键防御点：必须是 loo_fits
+                    y=y,              # 目标变量 
+                    family=family,    # 模型家族
+                    n_lmdas=n_lmdas,  # 路径长度
+                    lmda_min_ratio=lmda_min_ratio # 最小跨度比例
+                )
 
     # 4. 调用核心 PyTorch 求解器
     # 充分复用我们在 cv_uni 中编写的底层逻辑！
