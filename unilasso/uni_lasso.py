@@ -554,19 +554,19 @@ def plot(unilasso_fit) -> None:
     if coefs.ndim == 1 or len(lambdas) == 1:
         print("Only one regularization parameter was used. No path to plot.")
         return
-    print(lambdas)
+    
     plt.figure(figsize=(8, 6))
-    log_lambdas = np.log(lambdas)  # Convert lambda values to log scale
+    neg_log_lambdas = -np.log(lambdas)  # lambdas are already in descending order
 
     # Compute the number of nonzero coefficients at each lambda
     n_nonzero = np.sum(coefs != 0, axis=1)
 
     # Plot coefficient paths
     for i in range(coefs.shape[1]):  
-        plt.plot(log_lambdas, coefs[:, i], lw=2)
+        plt.plot(neg_log_lambdas, coefs[:, i], lw=2)
 
     # Labels and formatting
-    plt.xlabel(r"$\log(\lambda)$", fontsize=12)
+    plt.xlabel(r"$-\log(\lambda)$", fontsize=12)
     plt.ylabel("Coefficients", fontsize=12)
     plt.axhline(0, color='black', linestyle='--', linewidth=1)
 
@@ -574,8 +574,10 @@ def plot(unilasso_fit) -> None:
     ax1 = plt.gca()  
     ax2 = ax1.twiny()  
     ax2.set_xlim(ax1.get_xlim())  
-    ax2.set_xticks(log_lambdas[::5])  
-    ax2.set_xticklabels(n_nonzero[::5]) 
+    # Dynamic tick calculation for better readability
+    tick_indices = np.linspace(0, len(neg_log_lambdas) - 1, min(6, len(neg_log_lambdas)), dtype=int)
+    ax2.set_xticks(neg_log_lambdas[tick_indices])  
+    ax2.set_xticklabels(n_nonzero[tick_indices]) 
     ax2.set_xlabel("Number of Active Coefficients", fontsize=12)
 
     plt.show()
@@ -771,6 +773,8 @@ def fit_unilasso(
     reverse_indices = np.arange(len(glm_lmdas))
     reverse_indices = reverse_indices[::-1]
 
+    # Apply the same reversal to lmdas to maintain correspondence with coefs
+    lmdas = lmdas[reverse_indices]
 
     gamma_hat, gamma_0, beta_coefs = _format_output(lasso_model,
                                                     beta_coefs_fit,
