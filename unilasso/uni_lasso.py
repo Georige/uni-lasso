@@ -877,10 +877,21 @@ y_train: np.ndarray,
 lmdas: np.ndarray, 
 negative_penalty: float,
 fit_intercept: bool = True,
-lr: float = 0.01  # 显式定义学习率，供软阈值使用
+lr: float = 0.01,
+max_epochs: int = 5000,
+tol: float = 1e-6
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     沿着正则化路径 (lambda_path) 训练模型，利用 Warm Start 加速收敛。
+    
+    使用非对称软阈值算子 (Asymmetric Soft-Thresholding) 实现对负系数的惩罚。
+    
+    Parameters
+    ----------
+    negative_penalty : float
+        对负系数的额外惩罚强度。当 negative_penalty -> inf 时，
+        模型趋近于硬约束 theta >= 0（但不完全等价）。
+        当 negative_penalty = 0 时，退化为标准 Lasso。
     """
     X_t = torch.tensor(X_train, dtype=torch.float32)
     y_t = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
@@ -901,9 +912,9 @@ lr: float = 0.01  # 显式定义学习率，供软阈值使用
     
     for i, lmda in enumerate(lmdas):
         # 针对当前的 lambda 进行梯度下降更新 (利用了上一轮的 weights 作为起点)
-        for _ in range(500): 
+        for epoch in range(max_epochs): 
             optimizer.zero_grad()
-            # 第一步：只对“平滑部分 (MSE)”计算梯度！
+            # 第一步：只对"平滑部分 (MSE)"计算梯度！
             y_pred = torch.matmul(X_t, weights) + bias
             mse_loss = torch.mean((y_pred - y_t) ** 2)
             mse_loss.backward()
@@ -911,20 +922,33 @@ lr: float = 0.01  # 显式定义学习率，供软阈值使用
             # 走普通梯度下降的一步
             optimizer.step()
             
-            # 第二步：核心架构升级！你的专属“非对称近端算子 (Asymmetric Proximal)”
+            # 第二步：非对称近端算子 (Asymmetric Proximal Operator)
             with torch.no_grad():
-                # 截断不再是粗暴的 clamp，而是基于你设计的惩罚力度的精准数学映射
+                # 正方向的阈值（标准 L1）
                 tau_pos = lr * lmda
-                tau_neg = lr * (lmda + negative_penalty)  # 你的创新点在这里发力！
+                # 负方向的阈值（L1 + negative_penalty）
+                tau_neg = lr * (lmda + negative_penalty)
                 
-                # 1. 超过正向阈值：向左拉
-                w_pos = torch.where(weights > tau_pos, weights - tau_pos, torch.zeros_like(weights))
-                # 2. 跌破负向阈值：向右拉
-                w_neg = torch.where(weights < -tau_neg, weights + tau_neg, torch.zeros_like(weights))
-                # 3. 落在宽阔的“死亡之谷”：变为绝对的 0
+                # 正确的软阈值收缩逻辑：
+                # - 如果 w > tau_pos: 收缩到 w - tau_pos
+                # - 如果 w < -tau_neg: 收缩到 w + tau_neg  
+                # - 如果 -tau_neg <= w <= tau_pos: 收缩到 0
                 
-                # 更新权重
-                weights.copy_(w_pos + w_neg)
+                w_new = torch.zeros_like(weights)
+                
+                # 正方向收缩
+                mask_pos = weights > tau_pos
+                w_new[mask_pos] = weights[mask_pos] - tau_pos
+                
+                # 负方向收缩
+                mask_neg = weights < -tau_neg
+                w_new[mask_neg] = weights[mask_neg] + tau_neg
+                
+                # 检查收敛
+                if epoch > 0 and torch.max(torch.abs(w_new - weights)) < tol:
+                    break
+                
+                weights.copy_(w_new)
 
         betas_matrix[i, :] = weights.detach().numpy().flatten()
         intercepts[i] = bias.detach().item()

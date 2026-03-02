@@ -19,6 +19,15 @@ import warnings
 from unilasso import fit_unilasso, simulate_gaussian_data
 from unilasso.uni_lasso import fit_uni
 
+# 导入高级数据生成器
+from data_generators import (
+    generate_ar1_data,
+    generate_highdim_correlated_data,
+    generate_sign_inconsistent_data,
+    generate_factor_model_data,
+    get_data_generator
+)
+
 
 def simulate_sparse_gaussian_data(
     n: int = 1000,
@@ -243,6 +252,8 @@ def run_comparison_experiment(
     n_lmdas: int = 100,
     family: str = "gaussian",
     negative_penalty: float = 10.0,
+    data_type: str = "default",
+    data_params: Optional[Dict] = None,
     save_path: Optional[str] = None,
     verbose: bool = True
 ) -> Tuple[Dict, Dict]:
@@ -259,6 +270,8 @@ def run_comparison_experiment(
         n_lmdas: 正则化路径长度
         family: 分布家族
         negative_penalty: fit_uni 的负系数惩罚
+        data_type: 数据类型 ('default', 'ar1', 'highdim', 'sign_inconsistent', 'factor')
+        data_params: 数据生成器的额外参数
         save_path: 图片保存路径
         verbose: 是否打印详细信息
         
@@ -276,16 +289,36 @@ def run_comparison_experiment(
         print(f"正则化路径长度: {n_lmdas}")
         print("=" * 60)
     
-    # 1. 生成 k-稀疏模拟数据
+    # 1. 生成模拟数据
     if verbose:
-        print("\n[1/4] 生成 k-稀疏模拟数据...")
-    X, y, beta_true = simulate_sparse_gaussian_data(
-        n=n_samples, 
-        p=n_features, 
-        sparsity=sparsity,
-        signal_strength=signal_strength,
-        seed=random_state
-    )
+        print("\n[1/4] 生成模拟数据...")
+        print(f"  数据类型: {data_type}")
+    
+    data_params = data_params or {}
+    
+    if data_type == "default":
+        X, y, beta_true = simulate_sparse_gaussian_data(
+            n=n_samples, p=n_features, sparsity=sparsity,
+            signal_strength=signal_strength, seed=random_state
+        )
+    elif data_type == "ar1":
+        X, y, beta_true = generate_ar1_data(
+            n=n_samples, p=n_features, sparsity=sparsity, seed=random_state, **data_params
+        )
+    elif data_type == "highdim":
+        X, y, beta_true, _ = generate_highdim_correlated_data(
+            n=n_samples, p=n_features, sparsity=sparsity, seed=random_state, **data_params
+        )
+    elif data_type == "sign_inconsistent":
+        X, y, beta_true = generate_sign_inconsistent_data(
+            n=n_samples, p=n_features, seed=random_state, **data_params
+        )
+    elif data_type == "factor":
+        X, y, beta_true, _ = generate_factor_model_data(
+            n=n_samples, p=n_features, sparsity=sparsity, seed=random_state, **data_params
+        )
+    else:
+        raise ValueError(f"Unknown data_type: {data_type}")
     
     # 记录哪些特征真正有非零系数
     true_nonzero_indices = np.where(beta_true != 0)[0]
@@ -678,275 +711,6 @@ def experiment2_negative_penalty_tuning(
 # Main
 # ==============================================================================
 
-if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "2":
-        # 运行实验2
-        print("运行实验2：fit_uni 的 negative_penalty 调参")
-        print()
-        
-        results = experiment2_negative_penalty_tuning(
-            n_samples=300,
-            n_features=15,
-            sparsity=3,
-            signal_strength=2.0,
-            penalty_range=(0, 100),
-            n_points=6,
-            n_lmdas=40,
-            save_path="experiment2_penalty_tuning.png",
-            verbose=True
-        )
-    else:
-        # 默认运行实验1
-        print("示例：运行 fit_uni 和 fit_unilasso 的对比实验")
-        print("数据模型: k-稀疏高斯线性回归")
-        print()
-        
-        unilasso_res, uni_res = run_comparison_experiment(
-            n_samples=500,
-            n_features=10,
-            sparsity=3,
-            signal_strength=2.0,
-            test_size=0.3,
-            random_state=42,
-            n_lmdas=40,
-            negative_penalty=10.0,
-            save_path="experiment1_comparison.png",
-            verbose=True
-        )
-
-
-# ==============================================================================
-# 实验3：negative_penalty 对支持集（active sets）的影响分析
-# ==============================================================================
-
-def experiment3_active_set_analysis(
-    n_samples: int = 400,
-    n_features: int = 20,
-    sparsity: int = 5,
-    signal_strength: float = 2.0,
-    test_size: float = 0.3,
-    random_state: int = 42,
-    penalty_range: Tuple[float, float] = (0, 100),
-    n_points: int = 21,
-    fixed_lambda: Optional[float] = None,
-    save_path: Optional[str] = "experiment3_active_set_analysis.png",
-    verbose: bool = True
-) -> Dict:
-    """
-    实验3：分析 negative_penalty 对模型支持集（active sets）的影响。
-    
-    在固定lambda下，比较不同negative_penalty对应的选中特征数，
-    并与标准Lasso和fit_unilasso进行对比。
-    
-    Args:
-        n_samples: 样本数量
-        n_features: 特征数量
-        sparsity: 非零系数数量
-        signal_strength: 非零系数大小
-        test_size: 测试集比例
-        random_state: 随机种子
-        penalty_range: negative_penalty 范围
-        n_points: 采样点数
-        fixed_lambda: 固定的lambda值（None则使用中等大小的lambda）
-        save_path: 图片保存路径
-        verbose: 是否打印详细信息
-        
-    Returns:
-        包含分析结果的字典
-    """
-    import adelie as ad
-    from tqdm import tqdm
-    
-    penalties = np.linspace(penalty_range[0], penalty_range[1], n_points)
-    
-    if verbose:
-        print("=" * 70)
-        print("实验3：negative_penalty 对支持集的影响分析")
-        print("=" * 70)
-    
-    # 生成数据
-    np.random.seed(random_state)
-    X, y, beta_true = simulate_sparse_gaussian_data(
-        n=n_samples, p=n_features, sparsity=sparsity,
-        signal_strength=signal_strength, seed=random_state
-    )
-    
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
-    
-    true_nonzero = np.where(beta_true != 0)[0]
-    
-    # 准备fit_uni所需的数据（获取loo_fits和lambda路径）
-    from unilasso.uni_lasso import _prepare_unilasso_input, _configure_lmda_path, fit_unilasso
-    X_proc, y_proc, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, _, _, zero_var_idx = \
-        _prepare_unilasso_input(X_train, y_train, "gaussian", None)
-    
-    lambda_path = _configure_lmda_path(X=loo_fits, y=y_train, family="gaussian", n_lmdas=50, lmda_min_ratio=1e-4)
-    
-    # 确定固定的lambda值
-    if fixed_lambda is None:
-        # 使用中等大小的lambda（第30%位置的lambda）
-        fixed_lambda = lambda_path[int(len(lambda_path) * 0.3)]
-    
-    # 找到最接近fixed_lambda的索引
-    closest_idx = np.argmin(np.abs(lambda_path - fixed_lambda))
-    actual_lambda = lambda_path[closest_idx]
-    
-    if verbose:
-        print(f"\n数据设置:")
-        print(f"  样本数: {n_samples}, 特征数: {n_features}")
-        print(f"  真实非零系数: {len(true_nonzero)} 个")
-        print(f"\n固定的 lambda: {actual_lambda:.6f} (目标: {fixed_lambda:.6f})")
-        print(f"惩罚系数范围: [{penalty_range[0]:.1f}, {penalty_range[1]:.1f}]，共 {n_points} 个点")
-    
-    # 1. 训练标准Lasso模型（使用adelie）
-    if verbose:
-        print("\n[1/3] 训练标准Lasso模型...")
-    glm_y = ad.glm.gaussian(y_train)
-    lasso_model = ad.grpnet(
-        X=np.asfortranarray(X_train),
-        glm=glm_y,
-        intercept=True,
-        lmda_path_size=100,
-        min_ratio=1e-4
-    )
-    # 找到最接近的lambda
-    lasso_closest_idx = np.argmin(np.abs(np.array(lasso_model.lmdas) - actual_lambda))
-    lasso_coef = lasso_model.betas.toarray()[lasso_closest_idx]
-    lasso_active_set = np.sum(np.abs(lasso_coef) > 1e-6)
-    lasso_lambda = lasso_model.lmdas[lasso_closest_idx]
-    
-    if verbose:
-        print(f"  Lasso选中特征数: {lasso_active_set} (lambda={lasso_lambda:.6f})")
-    
-    # 2. 训练fit_unilasso模型
-    if verbose:
-        print("\n[2/3] 训练fit_unilasso模型...")
-    unilasso_result = fit_unilasso(
-        X=X_train, y=y_train,
-        n_lmdas=50,
-        verbose=False
-    )
-    unilasso_closest_idx = np.argmin(np.abs(unilasso_result.lmdas - actual_lambda))
-    unilasso_coef = unilasso_result.coefs[unilasso_closest_idx] if unilasso_result.coefs.ndim > 1 else unilasso_result.coefs
-    unilasso_active_set = np.sum(np.abs(unilasso_coef) > 1e-6)
-    unilasso_lambda = unilasso_result.lmdas[unilasso_closest_idx]
-    
-    if verbose:
-        print(f"  UniLasso选中特征数: {unilasso_active_set} (lambda={unilasso_lambda:.6f})")
-    
-    # 3. 测试不同negative_penalty下的支持集
-    if verbose:
-        print("\n[3/3] 测试不同negative_penalty下的支持集...")
-    
-    results = {
-        "penalties": [],
-        "active_sets": [],
-        "actual_lambda": actual_lambda,
-        "lasso_active_set": lasso_active_set,
-        "unilasso_active_set": unilasso_active_set,
-    }
-    
-    iterator = tqdm(penalties, desc="Testing penalties") if verbose else penalties
-    
-    for penalty in iterator:
-        try:
-            result = fit_uni(
-                X=X_train, y=y_train,
-                n_lmdas=50,
-                negative_penalty=float(penalty),
-                verbose=False
-            )
-            
-            # 找到最接近fixed_lambda的系数
-            closest_idx = np.argmin(np.abs(result.lmdas - actual_lambda))
-            coef = result.coefs[closest_idx] if result.coefs.ndim > 1 else result.coefs
-            active_set = np.sum(np.abs(coef) > 1e-6)
-            
-            results["penalties"].append(penalty)
-            results["active_sets"].append(active_set)
-            
-        except Exception as e:
-            if verbose:
-                print(f"\n警告: penalty={penalty} 失败: {e}")
-            continue
-    
-    for key in ["penalties", "active_sets"]:
-        results[key] = np.array(results[key])
-    
-    # 绘图
-    fig, ax = plt.subplots(figsize=(12, 7))
-    
-    # 绘制fit_uni曲线
-    ax.plot(results["penalties"], results["active_sets"], 'bo-', markersize=8, 
-            linewidth=2, label='fit_uni (different penalties)', alpha=0.7)
-    
-    # 绘制标准Lasso参考线（红色水平线）
-    ax.axhline(y=lasso_active_set, color='red', linestyle='--', linewidth=2,
-               label=f'Standard Lasso: {lasso_active_set} features')
-    ax.scatter([penalty_range[1] * 0.95], [lasso_active_set], color='red', s=200, 
-               marker='s', zorder=5, edgecolors='black', linewidths=2)
-    
-    # 绘制UniLasso参考线（绿色水平线）
-    ax.axhline(y=unilasso_active_set, color='green', linestyle='--', linewidth=2,
-               label=f'UniLasso: {unilasso_active_set} features')
-    ax.scatter([penalty_range[1] * 0.95], [unilasso_active_set], color='green', s=200, 
-               marker='^', zorder=5, edgecolors='black', linewidths=2)
-    
-    # 绘制真实稀疏度参考线
-    ax.axhline(y=len(true_nonzero), color='gray', linestyle=':', linewidth=2, alpha=0.5,
-               label=f'True sparsity: {len(true_nonzero)}')
-    
-    ax.set_xlabel("Negative Penalty", fontsize=14)
-    ax.set_ylabel("Active Set Size (Number of Selected Features)", fontsize=14)
-    ax.set_title(f"Active Set vs Negative Penalty (Fixed λ={actual_lambda:.4f})", fontsize=15)
-    ax.grid(True, linestyle=':', alpha=0.6)
-    ax.legend(loc='best', fontsize=11, frameon=True)
-    
-    # 设置y轴范围，留出一些空间
-    y_min = min(min(results["active_sets"]), lasso_active_set, unilasso_active_set, len(true_nonzero)) - 1
-    y_max = max(max(results["active_sets"]), lasso_active_set, unilasso_active_set, len(true_nonzero)) + 2
-    ax.set_ylim(max(0, y_min), y_max)
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        if verbose:
-            print(f"\n图片已保存至: {save_path}")
-    
-    plt.show()
-    
-    # 输出统计
-    if verbose:
-        print("\n" + "=" * 70)
-        print("实验3结果摘要")
-        print("=" * 70)
-        print(f"固定lambda: {actual_lambda:.6f}")
-        print(f"真实非零系数: {len(true_nonzero)}")
-        print(f"\n参考模型:")
-        print(f"  标准Lasso选中: {lasso_active_set} 个特征")
-        print(f"  UniLasso选中: {unilasso_active_set} 个特征")
-        print(f"\nfit_uni随penalty变化:")
-        print(f"  Penalty=0时: {results['active_sets'][0]} 个特征")
-        print(f"  Penalty={results['penalties'][-1]:.0f}时: {results['active_sets'][-1]} 个特征")
-        
-        # 找到最接近真实稀疏度的penalty
-        closest_to_truth = np.argmin(np.abs(results["active_sets"] - len(true_nonzero)))
-        print(f"  最接近真实稀疏度的penalty: {results['penalties'][closest_to_truth]:.1f} "
-              f"({results['active_sets'][closest_to_truth]} 个特征)")
-    
-    return results
-
-
-# ==============================================================================
-# Main
-# ==============================================================================
-
-if __name__ == "__main__":
     import sys
     
     if len(sys.argv) > 1 and sys.argv[1] == "2":
@@ -977,8 +741,61 @@ if __name__ == "__main__":
             signal_strength=2.0,
             penalty_range=(0, 100),
             n_points=6,
-            fixed_lambda=None,  # 自动选择中等lambda
+            fixed_lambda=None,
             save_path="experiment3_active_set_analysis.png",
+            verbose=True
+        )
+    elif len(sys.argv) > 1 and sys.argv[1] == "ar1":
+        # 实验1 + AR(1)数据
+        print("实验1：使用 AR(1) 相关性数据")
+        print()
+        
+        unilasso_res, uni_res = run_comparison_experiment(
+            n_samples=300,
+            n_features=20,
+            sparsity=8,
+            test_size=0.3,
+            random_state=42,
+            n_lmdas=40,
+            negative_penalty=10.0,
+            data_type="ar1",
+            data_params={"rho": 0.7, "beta_min": 0.5, "beta_max": 2.0},
+            save_path="experiment1_ar1.png",
+            verbose=True
+        )
+    elif len(sys.argv) > 1 and sys.argv[1] == "sign":
+        # 实验1 + 符号不一致数据
+        print("实验1：使用符号不一致数据")
+        print()
+        
+        unilasso_res, uni_res = run_comparison_experiment(
+            n_samples=200,
+            n_features=10,
+            test_size=0.3,
+            random_state=42,
+            n_lmdas=40,
+            negative_penalty=10.0,
+            data_type="sign_inconsistent",
+            data_params={"noise_X": 0.1, "noise_y": 1.0},
+            save_path="experiment1_sign_inconsistent.png",
+            verbose=True
+        )
+    elif len(sys.argv) > 1 and sys.argv[1] == "factor":
+        # 实验1 + 因子模型数据
+        print("实验1：使用因子模型数据")
+        print()
+        
+        unilasso_res, uni_res = run_comparison_experiment(
+            n_samples=300,
+            n_features=50,
+            sparsity=10,
+            test_size=0.3,
+            random_state=42,
+            n_lmdas=40,
+            negative_penalty=10.0,
+            data_type="factor",
+            data_params={"n_factors": 5},
+            save_path="experiment1_factor.png",
             verbose=True
         )
     else:
