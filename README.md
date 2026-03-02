@@ -4,7 +4,7 @@
 You can install UniLasso by running the following script.
 
 ```bash
-git clone https://github.com/sophial05/uni-lasso.git
+
 git clone -b Asymmetrix-Proximal https://github.com/Georige/uni-lasso.git
 cd uni-lasso
 pip install -e .
