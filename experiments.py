@@ -466,256 +466,33 @@ def run_single_experiment(
     return result
 
 
+
+
 # ==============================================================================
 # 实验2：fit_uni 的 negative_penalty 调参实验
 # ==============================================================================
 
-from tqdm import tqdm
-from tqdm.notebook import tqdm as tqdm_notebook
-
-
-def in_jupyter():
-    """检测是否在 Jupyter Notebook 环境中"""
-    try:
-        from IPython import get_ipython
-        if get_ipython() is None:
-            return False
-        if 'IPKernelApp' not in get_ipython().config:
-            return False
-        return True
-    except:
-        return False
-from IPython.display import clear_output, display
-
-def experiment_negative_penalty_tuning(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    penalty_range: Tuple[float, float] = (0, 100),
-    n_points: int = 21,
-    penalty_values: Optional[np.ndarray] = None,
-    family: str = "gaussian",
-    n_lmdas: int = 100,
-    lmda_min_ratio: float = 1e-4,
-    dynamic_plot: bool = True,
-    save_path: Optional[str] = None,
-    verbose: bool = True
-) -> Dict:
-    """
-    实验2：调参 negative_penalty，绘制惩罚系数 vs 最佳测试误差曲线。
-    
-    Args:
-        X_train: 训练集特征
-        y_train: 训练集标签
-        X_test: 测试集特征
-        y_test: 测试集标签
-        penalty_range: negative_penalty 的范围 (min, max)
-        n_points: 在范围内均匀采样的点数
-        penalty_values: 直接指定惩罚系数列表（如果提供则覆盖 penalty_range）
-        family: 分布家族
-        n_lmdas: 每个模型的正则化路径长度
-        lmda_min_ratio: 最小正则化比例
-        dynamic_plot: 是否动态画图
-        save_path: 最终图片保存路径
-        verbose: 是否打印详细信息
-        
-    Returns:
-        包含惩罚系数列表和对应最佳测试误差的字典
-    """
-    # 确定惩罚系数列表
-    if penalty_values is not None:
-        penalties = np.array(penalty_values)
-    else:
-        # 在指定范围内均匀采样（包含端点）
-        penalties = np.linspace(penalty_range[0], penalty_range[1], n_points)
-    
-    if verbose:
-        print("=" * 60)
-        print("实验2：fit_uni 的 negative_penalty 调参")
-        print("=" * 60)
-        print(f"惩罚系数范围: [{penalties[0]:.2f}, {penalties[-1]:.2f}]")
-        print(f"测试点数: {len(penalties)}")
-        print(f"每个模型的正则化路径长度: {n_lmdas}")
-        print("=" * 60)
-    
-    # 检测是否在 Jupyter 环境
-    is_jupyter = in_jupyter()
-    
-    # 存储结果
-    results = {
-        "penalties": [],
-        "best_test_mses": [],
-        "best_train_mses": [],
-        "best_lmdas": [],
-        "n_selected_features": []
-    }
-    
-    # 设置动态画图
-    if dynamic_plot:
-        fig, ax = plt.subplots(figsize=(10, 8))
-        ax.set_xlabel("Negative Penalty", fontsize=12)
-        ax.set_ylabel("Best Test MSE", fontsize=12)
-        ax.set_title("fit_uni: Negative Penalty Tuning", fontsize=14)
-        ax.grid(True, linestyle=':', alpha=0.6)
-        
-        # 设置初始坐标轴范围
-        ax.set_xlim(penalties[0] - 5, penalties[-1] + 5)
-        ax.set_ylim(0, 2)  # 初始Y轴范围，后续会动态调整
-        
-        # 非 Jupyter 环境使用交互模式
-        if not is_jupyter:
-            plt.ion()
-    
-    # 选择合适的 tqdm
-    if is_jupyter and verbose:
-        iterator = tqdm_notebook(penalties, desc="Tuning negative_penalty")
-    elif verbose:
-        iterator = tqdm(penalties, desc="Tuning negative_penalty")
-    else:
-        iterator = penalties
-    
-    for i, penalty in enumerate(iterator):
-        # 训练 fit_uni 模型
-        try:
-            result = fit_uni(
-                X=X_train,
-                y=y_train,
-                family=family,
-                n_lmdas=n_lmdas,
-                lmda_min_ratio=lmda_min_ratio,
-                negative_penalty=float(penalty),
-                verbose=False
-            )
-            
-            # 在整个正则化路径上进行预测
-            test_preds = predict_with_path(result, X_test)
-            train_preds = predict_with_path(result, X_train)
-            
-            # 计算每个 lambda 对应的 MSE
-            test_mses = np.array([compute_mse(y_test, test_preds[:, j]) for j in range(len(result.lmdas))])
-            train_mses = np.array([compute_mse(y_train, train_preds[:, j]) for j in range(len(result.lmdas))])
-            
-            # 找到最佳测试误差
-            best_idx = np.argmin(test_mses)
-            best_test_mse = test_mses[best_idx]
-            best_train_mse = train_mses[best_idx]
-            best_lmda = result.lmdas[best_idx]
-            
-            # 统计选中的特征数
-            best_coef = result.coefs[best_idx] if result.coefs.ndim > 1 else result.coefs
-            n_selected = np.sum(np.abs(best_coef) > 1e-6)
-            
-            # 保存结果
-            results["penalties"].append(penalty)
-            results["best_test_mses"].append(best_test_mse)
-            results["best_train_mses"].append(best_train_mse)
-            results["best_lmdas"].append(best_lmda)
-            results["n_selected_features"].append(n_selected)
-            
-            # 动态更新图像
-            if dynamic_plot:
-                ax.clear()
-                ax.plot(results["penalties"], results["best_test_mses"], 'bo-', markersize=8, linewidth=2, alpha=0.7)
-                ax.set_xlabel("Negative Penalty", fontsize=12)
-                ax.set_ylabel("Best Test MSE", fontsize=12)
-                ax.set_title(f"fit_uni: Negative Penalty Tuning (Progress: {i+1}/{len(penalties)})", fontsize=14)
-                ax.grid(True, linestyle=':', alpha=0.6)
-                ax.set_xlim(penalties[0] - 5, penalties[-1] + 5)
-                ax.set_ylim(0, max(results["best_test_mses"]) * 1.2)
-                
-                # 标注当前点（用垂直线）
-                ax.axvline(x=penalty, color='r', linestyle='--', alpha=0.3)
-                
-                if is_jupyter:
-                    # Jupyter 环境：使用 clear_output + display
-                    from IPython.display import clear_output, display
-                    clear_output(wait=True)
-                    display(fig)
-                else:
-                    # 非 Jupyter 环境：使用交互模式刷新
-                    fig.canvas.draw()
-                    fig.canvas.flush_events()
-                    plt.pause(0.001)
-                
-        except Exception as e:
-            if verbose:
-                print(f"\n警告: penalty={penalty:.2f} 时训练失败: {e}")
-            continue
-    
-    # 关闭交互模式并保存最终图像
-    if dynamic_plot:
-        if not is_jupyter:
-            plt.ioff()
-        
-        ax.clear()
-        ax.plot(results["penalties"], results["best_test_mses"], 'bo-', markersize=8, linewidth=2, alpha=0.7)
-        ax.set_xlabel("Negative Penalty", fontsize=12)
-        ax.set_ylabel("Best Test MSE", fontsize=12)
-        ax.set_title("fit_uni: Negative Penalty Tuning (Completed)", fontsize=14)
-        ax.grid(True, linestyle=':', alpha=0.6)
-        ax.set_xlim(penalties[0] - 5, penalties[-1] + 5)
-        ax.set_ylim(0, max(results["best_test_mses"]) * 1.1)
-        
-        # 添加最佳点标注
-        best_idx = np.argmin(results["best_test_mses"])
-        best_penalty = results["penalties"][best_idx]
-        best_mse = results["best_test_mses"][best_idx]
-        ax.plot(best_penalty, best_mse, 'r*', markersize=15, label=f'Best: penalty={best_penalty:.2f}, MSE={best_mse:.4f}')
-        ax.legend()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            if verbose:
-                print(f"\n最终图片已保存至: {save_path}")
-        
-        if is_jupyter:
-            from IPython.display import clear_output, display
-            clear_output(wait=True)
-            display(fig)
-        else:
-            plt.show()
-    
-    # 转换为 numpy 数组
-    for key in results:
-        results[key] = np.array(results[key])
-    
-    # 输出统计信息
-    if verbose:
-        print("\n" + "=" * 60)
-        print("实验2结果摘要")
-        print("=" * 60)
-        
-        best_idx = np.argmin(results["best_test_mses"])
-        print(f"最佳惩罚系数: {results['penalties'][best_idx]:.4f}")
-        print(f"对应最佳测试 MSE: {results['best_test_mses'][best_idx]:.6f}")
-        print(f"对应训练 MSE: {results['best_train_mses'][best_idx]:.6f}")
-        print(f"对应最佳 lambda: {results['best_lmdas'][best_idx]:.6f}")
-        print(f"选中特征数: {results['n_selected_features'][best_idx]}")
-        
-        print(f"\n最差测试 MSE: {np.max(results['best_test_mses']):.6f} (penalty={results['penalties'][np.argmax(results['best_test_mses'])]:.2f})")
-        print(f"MSE 标准差: {np.std(results['best_test_mses']):.6f}")
-    
-    return results
-
-
-def run_experiment2(
-    n_samples: int = 500,
-    n_features: int = 20,
-    sparsity: int = 5,
+def experiment2_negative_penalty_tuning(
+    n_samples: int = 300,
+    n_features: int = 15,
+    sparsity: int = 4,
     signal_strength: float = 2.0,
     test_size: float = 0.3,
     random_state: int = 42,
     penalty_range: Tuple[float, float] = (0, 100),
-    n_points: int = 21,
-    penalty_values: Optional[np.ndarray] = None,
-    n_lmdas: int = 50,
-    dynamic_plot: bool = True,
+    n_points: int = 11,
+    n_lmdas: int = 40,
     save_path: Optional[str] = "experiment2_penalty_tuning.png",
     verbose: bool = True
 ) -> Dict:
     """
-    便捷函数：运行完整的实验2。
+    实验2：调参 negative_penalty，分析其对模型效果的影响。
+    
+    关键发现：negative_penalty 只在小的 lambda 时产生明显差异（压制负系数）。
+    因此本实验同时展示：
+    1. 最佳测试 MSE vs penalty
+    2. 负系数数量 vs penalty（在最小 lambda 处，即最不稀疏的模型）
+    3. 选中特征数 vs penalty
     
     Args:
         n_samples: 样本数量
@@ -726,59 +503,173 @@ def run_experiment2(
         random_state: 随机种子
         penalty_range: negative_penalty 范围
         n_points: 采样点数
-        penalty_values: 直接指定惩罚系数列表
         n_lmdas: 每个模型的正则化路径长度
-        dynamic_plot: 是否动态画图
         save_path: 图片保存路径
         verbose: 是否打印详细信息
         
     Returns:
         实验结果字典
     """
-    if verbose:
-        print("=" * 60)
-        print("实验2：fit_uni 的 negative_penalty 调参实验")
-        print("=" * 60)
+    from tqdm import tqdm
     
-    # 生成 k-稀疏数据
+    penalties = np.linspace(penalty_range[0], penalty_range[1], n_points)
+    
     if verbose:
-        print("\n[1/2] 生成 k-稀疏模拟数据...")
+        print("=" * 70)
+        print("实验2：fit_uni 的 negative_penalty 调参实验")
+        print("=" * 70)
+    
+    # 生成数据（确保有负系数）
+    np.random.seed(random_state)
     X, y, beta_true = simulate_sparse_gaussian_data(
-        n=n_samples,
-        p=n_features,
-        sparsity=sparsity,
-        signal_strength=signal_strength,
-        seed=random_state
+        n=n_samples, p=n_features, sparsity=sparsity, 
+        signal_strength=signal_strength, seed=random_state
     )
+    
+    # 将一半的非零系数设为负，确保有负系数被测试
+    nonzero_idx = np.where(beta_true != 0)[0]
+    for i in range(len(nonzero_idx) // 2):
+        beta_true[nonzero_idx[i]] = -abs(beta_true[nonzero_idx[i]])
+    y = X @ beta_true + np.random.normal(size=n_samples)
     
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state
     )
     
-    true_nonzero_indices = np.where(beta_true != 0)[0]
+    true_nonzero = np.where(beta_true != 0)[0]
+    true_negative = np.where(beta_true < 0)[0]
+    
     if verbose:
+        print(f"\n数据设置:")
         print(f"  样本数: {n_samples}, 特征数: {n_features}")
-        print(f"  稀疏度: {sparsity}/{n_features}")
-        print(f"  真实非零系数位置: {true_nonzero_indices}")
-        print(f"  数据分割: 训练集={len(y_train)}, 测试集={len(y_test)}")
+        print(f"  真实非零系数: {len(true_nonzero)} 个")
+        print(f"  真实负系数: {len(true_negative)} 个，位置: {true_negative}")
+        print(f"  惩罚系数范围: [{penalty_range[0]:.1f}, {penalty_range[1]:.1f}]，共 {n_points} 个点")
     
-    # 运行调参实验
+    # 存储结果
+    results = {
+        "penalties": [],
+        "best_test_mses": [],
+        "best_train_mses": [],
+        "best_lambdas": [],
+        "n_selected": [],
+        "n_negative_at_best": [],
+        "n_negative_at_small_lambda": [],
+    }
+    
+    iterator = tqdm(penalties, desc="Testing penalties") if verbose else penalties
+    
+    for penalty in iterator:
+        try:
+            result = fit_uni(
+                X=X_train, y=y_train,
+                n_lmdas=n_lmdas,
+                negative_penalty=float(penalty),
+                verbose=False
+            )
+            
+            # 在整个路径上预测并计算MSE
+            test_preds = predict_with_path(result, X_test)
+            train_preds = predict_with_path(result, X_train)
+            
+            test_mses = np.array([compute_mse(y_test, test_preds[:, j]) for j in range(len(result.lmdas))])
+            train_mses = np.array([compute_mse(y_train, train_preds[:, j]) for j in range(len(result.lmdas))])
+            
+            best_idx = np.argmin(test_mses)
+            
+            # 获取不同位置的系数
+            best_coef = result.coefs[best_idx] if result.coefs.ndim > 1 else result.coefs
+            small_lambda_coef = result.coefs[-1] if result.coefs.ndim > 1 else result.coefs
+            
+            results["penalties"].append(penalty)
+            results["best_test_mses"].append(test_mses[best_idx])
+            results["best_train_mses"].append(train_mses[best_idx])
+            results["best_lambdas"].append(result.lmdas[best_idx])
+            results["n_selected"].append(np.sum(np.abs(best_coef) > 1e-6))
+            results["n_negative_at_best"].append(np.sum(best_coef < -1e-6))
+            results["n_negative_at_small_lambda"].append(np.sum(small_lambda_coef < -1e-6))
+            
+        except Exception as e:
+            if verbose:
+                print(f"\n警告: penalty={penalty} 失败: {e}")
+            continue
+    
+    for key in results:
+        results[key] = np.array(results[key])
+    
+    # 绘制结果（2x2子图）
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # 图1: 最佳测试MSE
+    ax = axes[0, 0]
+    ax.plot(results["penalties"], results["best_test_mses"], 'bo-', markersize=8, linewidth=2)
+    ax.set_xlabel("Negative Penalty", fontsize=12)
+    ax.set_ylabel("Best Test MSE", fontsize=12)
+    ax.set_title("Best Test MSE vs Penalty", fontsize=13)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    best_idx = np.argmin(results["best_test_mses"])
+    ax.plot(results["penalties"][best_idx], results["best_test_mses"][best_idx], 
+            'r*', markersize=15, label=f'Best: penalty={results["penalties"][best_idx]:.1f}')
+    ax.legend()
+    
+    # 图2: 选中特征数
+    ax = axes[0, 1]
+    ax.plot(results["penalties"], results["n_selected"], 'gs-', markersize=8, linewidth=2)
+    ax.axhline(y=len(true_nonzero), color='r', linestyle='--', alpha=0.5, 
+               label=f'True non-zero: {len(true_nonzero)}')
+    ax.set_xlabel("Negative Penalty", fontsize=12)
+    ax.set_ylabel("Selected Features", fontsize=12)
+    ax.set_title("Selected Features vs Penalty", fontsize=13)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.legend()
+    
+    # 图3: 负系数数量（最佳lambda处）
+    ax = axes[1, 0]
+    ax.plot(results["penalties"], results["n_negative_at_best"], 'r^-', markersize=8, linewidth=2)
+    ax.axhline(y=len(true_negative), color='k', linestyle='--', alpha=0.5, 
+               label=f'True negative: {len(true_negative)}')
+    ax.set_xlabel("Negative Penalty", fontsize=12)
+    ax.set_ylabel("Negative Coefficients", fontsize=12)
+    ax.set_title("Negative Coefficients at Best Lambda", fontsize=13)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.legend()
+    
+    # 图4: 负系数数量（最小lambda处 - 最关键！）
+    ax = axes[1, 1]
+    ax.plot(results["penalties"], results["n_negative_at_small_lambda"], 'm^-', markersize=8, linewidth=2)
+    ax.axhline(y=len(true_negative), color='k', linestyle='--', alpha=0.5, 
+               label=f'True negative: {len(true_negative)}')
+    ax.set_xlabel("Negative Penalty", fontsize=12)
+    ax.set_ylabel("Negative Coefficients", fontsize=12)
+    ax.set_title("Negative Coefficients at Smallest Lambda", fontsize=13)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.legend()
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        if verbose:
+            print(f"\n图片已保存至: {save_path}")
+    
+    plt.show()
+    
+    # 输出统计
     if verbose:
-        print("\n[2/2] 开始调参实验...")
-    
-    results = experiment_negative_penalty_tuning(
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        penalty_range=penalty_range,
-        n_points=n_points,
-        penalty_values=penalty_values,
-        n_lmdas=n_lmdas,
-        dynamic_plot=dynamic_plot,
-        save_path=save_path,
-        verbose=verbose
-    )
+        print("\n" + "=" * 70)
+        print("实验2结果摘要")
+        print("=" * 70)
+        print(f"{'Penalty':<10} {'Test MSE':<12} {'Selected':<10} {'Neg@Best':<12} {'Neg@Small'}")
+        print("-" * 70)
+        for i in range(len(results["penalties"])):
+            print(f"{results['penalties'][i]:<10.1f} {results['best_test_mses'][i]:<12.6f} "
+                  f"{results['n_selected'][i]:<10} {results['n_negative_at_best'][i]:<12} "
+                  f"{results['n_negative_at_small_lambda'][i]}")
+        
+        print(f"\n关键发现:")
+        print(f"  - Penalty=0 时，最小lambda处有 {results['n_negative_at_small_lambda'][0]} 个负系数")
+        print(f"  - Penalty={results['penalties'][-1]:.0f} 时，最小lambda处有 {results['n_negative_at_small_lambda'][-1]} 个负系数")
+        print(f"  - 真实负系数: {len(true_negative)} 个")
     
     return results
 
@@ -790,21 +681,19 @@ def run_experiment2(
 if __name__ == "__main__":
     import sys
     
-    # 检查命令行参数来选择实验
     if len(sys.argv) > 1 and sys.argv[1] == "2":
         # 运行实验2
         print("运行实验2：fit_uni 的 negative_penalty 调参")
         print()
         
-        results = run_experiment2(
+        results = experiment2_negative_penalty_tuning(
             n_samples=300,
             n_features=15,
-            sparsity=4,
+            sparsity=3,
             signal_strength=2.0,
             penalty_range=(0, 100),
-            n_points=21,  # 0, 5, 10, ..., 100
-            n_lmdas=30,
-            dynamic_plot=True,
+            n_points=6,
+            n_lmdas=40,
             save_path="experiment2_penalty_tuning.png",
             verbose=True
         )
@@ -814,15 +703,298 @@ if __name__ == "__main__":
         print("数据模型: k-稀疏高斯线性回归")
         print()
         
-        # 运行对比实验（k-稀疏设置）
         unilasso_res, uni_res = run_comparison_experiment(
             n_samples=500,
-            n_features=20,      # 20个特征
-            sparsity=5,         # 只有5个真正有非零系数
-            signal_strength=2.0, # 非零系数大小
-            test_size=0.3,      # 三七分
+            n_features=10,
+            sparsity=3,
+            signal_strength=2.0,
+            test_size=0.3,
             random_state=42,
-            n_lmdas=50,
+            n_lmdas=40,
+            negative_penalty=10.0,
+            save_path="experiment1_comparison.png",
+            verbose=True
+        )
+
+
+# ==============================================================================
+# 实验3：negative_penalty 对支持集（active sets）的影响分析
+# ==============================================================================
+
+def experiment3_active_set_analysis(
+    n_samples: int = 400,
+    n_features: int = 20,
+    sparsity: int = 5,
+    signal_strength: float = 2.0,
+    test_size: float = 0.3,
+    random_state: int = 42,
+    penalty_range: Tuple[float, float] = (0, 100),
+    n_points: int = 21,
+    fixed_lambda: Optional[float] = None,
+    save_path: Optional[str] = "experiment3_active_set_analysis.png",
+    verbose: bool = True
+) -> Dict:
+    """
+    实验3：分析 negative_penalty 对模型支持集（active sets）的影响。
+    
+    在固定lambda下，比较不同negative_penalty对应的选中特征数，
+    并与标准Lasso和fit_unilasso进行对比。
+    
+    Args:
+        n_samples: 样本数量
+        n_features: 特征数量
+        sparsity: 非零系数数量
+        signal_strength: 非零系数大小
+        test_size: 测试集比例
+        random_state: 随机种子
+        penalty_range: negative_penalty 范围
+        n_points: 采样点数
+        fixed_lambda: 固定的lambda值（None则使用中等大小的lambda）
+        save_path: 图片保存路径
+        verbose: 是否打印详细信息
+        
+    Returns:
+        包含分析结果的字典
+    """
+    import adelie as ad
+    from tqdm import tqdm
+    
+    penalties = np.linspace(penalty_range[0], penalty_range[1], n_points)
+    
+    if verbose:
+        print("=" * 70)
+        print("实验3：negative_penalty 对支持集的影响分析")
+        print("=" * 70)
+    
+    # 生成数据
+    np.random.seed(random_state)
+    X, y, beta_true = simulate_sparse_gaussian_data(
+        n=n_samples, p=n_features, sparsity=sparsity,
+        signal_strength=signal_strength, seed=random_state
+    )
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state
+    )
+    
+    true_nonzero = np.where(beta_true != 0)[0]
+    
+    # 准备fit_uni所需的数据（获取loo_fits和lambda路径）
+    from unilasso.uni_lasso import _prepare_unilasso_input, _configure_lmda_path, fit_unilasso
+    X_proc, y_proc, loo_fits, beta_intercepts, beta_coefs_fit, glm_family, _, _, zero_var_idx = \
+        _prepare_unilasso_input(X_train, y_train, "gaussian", None)
+    
+    lambda_path = _configure_lmda_path(X=loo_fits, y=y_train, family="gaussian", n_lmdas=50, lmda_min_ratio=1e-4)
+    
+    # 确定固定的lambda值
+    if fixed_lambda is None:
+        # 使用中等大小的lambda（第30%位置的lambda）
+        fixed_lambda = lambda_path[int(len(lambda_path) * 0.3)]
+    
+    # 找到最接近fixed_lambda的索引
+    closest_idx = np.argmin(np.abs(lambda_path - fixed_lambda))
+    actual_lambda = lambda_path[closest_idx]
+    
+    if verbose:
+        print(f"\n数据设置:")
+        print(f"  样本数: {n_samples}, 特征数: {n_features}")
+        print(f"  真实非零系数: {len(true_nonzero)} 个")
+        print(f"\n固定的 lambda: {actual_lambda:.6f} (目标: {fixed_lambda:.6f})")
+        print(f"惩罚系数范围: [{penalty_range[0]:.1f}, {penalty_range[1]:.1f}]，共 {n_points} 个点")
+    
+    # 1. 训练标准Lasso模型（使用adelie）
+    if verbose:
+        print("\n[1/3] 训练标准Lasso模型...")
+    glm_y = ad.glm.gaussian(y_train)
+    lasso_model = ad.grpnet(
+        X=np.asfortranarray(X_train),
+        glm=glm_y,
+        intercept=True,
+        lmda_path_size=100,
+        min_ratio=1e-4
+    )
+    # 找到最接近的lambda
+    lasso_closest_idx = np.argmin(np.abs(np.array(lasso_model.lmdas) - actual_lambda))
+    lasso_coef = lasso_model.betas.toarray()[lasso_closest_idx]
+    lasso_active_set = np.sum(np.abs(lasso_coef) > 1e-6)
+    lasso_lambda = lasso_model.lmdas[lasso_closest_idx]
+    
+    if verbose:
+        print(f"  Lasso选中特征数: {lasso_active_set} (lambda={lasso_lambda:.6f})")
+    
+    # 2. 训练fit_unilasso模型
+    if verbose:
+        print("\n[2/3] 训练fit_unilasso模型...")
+    unilasso_result = fit_unilasso(
+        X=X_train, y=y_train,
+        n_lmdas=50,
+        verbose=False
+    )
+    unilasso_closest_idx = np.argmin(np.abs(unilasso_result.lmdas - actual_lambda))
+    unilasso_coef = unilasso_result.coefs[unilasso_closest_idx] if unilasso_result.coefs.ndim > 1 else unilasso_result.coefs
+    unilasso_active_set = np.sum(np.abs(unilasso_coef) > 1e-6)
+    unilasso_lambda = unilasso_result.lmdas[unilasso_closest_idx]
+    
+    if verbose:
+        print(f"  UniLasso选中特征数: {unilasso_active_set} (lambda={unilasso_lambda:.6f})")
+    
+    # 3. 测试不同negative_penalty下的支持集
+    if verbose:
+        print("\n[3/3] 测试不同negative_penalty下的支持集...")
+    
+    results = {
+        "penalties": [],
+        "active_sets": [],
+        "actual_lambda": actual_lambda,
+        "lasso_active_set": lasso_active_set,
+        "unilasso_active_set": unilasso_active_set,
+    }
+    
+    iterator = tqdm(penalties, desc="Testing penalties") if verbose else penalties
+    
+    for penalty in iterator:
+        try:
+            result = fit_uni(
+                X=X_train, y=y_train,
+                n_lmdas=50,
+                negative_penalty=float(penalty),
+                verbose=False
+            )
+            
+            # 找到最接近fixed_lambda的系数
+            closest_idx = np.argmin(np.abs(result.lmdas - actual_lambda))
+            coef = result.coefs[closest_idx] if result.coefs.ndim > 1 else result.coefs
+            active_set = np.sum(np.abs(coef) > 1e-6)
+            
+            results["penalties"].append(penalty)
+            results["active_sets"].append(active_set)
+            
+        except Exception as e:
+            if verbose:
+                print(f"\n警告: penalty={penalty} 失败: {e}")
+            continue
+    
+    for key in ["penalties", "active_sets"]:
+        results[key] = np.array(results[key])
+    
+    # 绘图
+    fig, ax = plt.subplots(figsize=(12, 7))
+    
+    # 绘制fit_uni曲线
+    ax.plot(results["penalties"], results["active_sets"], 'bo-', markersize=8, 
+            linewidth=2, label='fit_uni (different penalties)', alpha=0.7)
+    
+    # 绘制标准Lasso参考线（红色水平线）
+    ax.axhline(y=lasso_active_set, color='red', linestyle='--', linewidth=2,
+               label=f'Standard Lasso: {lasso_active_set} features')
+    ax.scatter([penalty_range[1] * 0.95], [lasso_active_set], color='red', s=200, 
+               marker='s', zorder=5, edgecolors='black', linewidths=2)
+    
+    # 绘制UniLasso参考线（绿色水平线）
+    ax.axhline(y=unilasso_active_set, color='green', linestyle='--', linewidth=2,
+               label=f'UniLasso: {unilasso_active_set} features')
+    ax.scatter([penalty_range[1] * 0.95], [unilasso_active_set], color='green', s=200, 
+               marker='^', zorder=5, edgecolors='black', linewidths=2)
+    
+    # 绘制真实稀疏度参考线
+    ax.axhline(y=len(true_nonzero), color='gray', linestyle=':', linewidth=2, alpha=0.5,
+               label=f'True sparsity: {len(true_nonzero)}')
+    
+    ax.set_xlabel("Negative Penalty", fontsize=14)
+    ax.set_ylabel("Active Set Size (Number of Selected Features)", fontsize=14)
+    ax.set_title(f"Active Set vs Negative Penalty (Fixed λ={actual_lambda:.4f})", fontsize=15)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.legend(loc='best', fontsize=11, frameon=True)
+    
+    # 设置y轴范围，留出一些空间
+    y_min = min(min(results["active_sets"]), lasso_active_set, unilasso_active_set, len(true_nonzero)) - 1
+    y_max = max(max(results["active_sets"]), lasso_active_set, unilasso_active_set, len(true_nonzero)) + 2
+    ax.set_ylim(max(0, y_min), y_max)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        if verbose:
+            print(f"\n图片已保存至: {save_path}")
+    
+    plt.show()
+    
+    # 输出统计
+    if verbose:
+        print("\n" + "=" * 70)
+        print("实验3结果摘要")
+        print("=" * 70)
+        print(f"固定lambda: {actual_lambda:.6f}")
+        print(f"真实非零系数: {len(true_nonzero)}")
+        print(f"\n参考模型:")
+        print(f"  标准Lasso选中: {lasso_active_set} 个特征")
+        print(f"  UniLasso选中: {unilasso_active_set} 个特征")
+        print(f"\nfit_uni随penalty变化:")
+        print(f"  Penalty=0时: {results['active_sets'][0]} 个特征")
+        print(f"  Penalty={results['penalties'][-1]:.0f}时: {results['active_sets'][-1]} 个特征")
+        
+        # 找到最接近真实稀疏度的penalty
+        closest_to_truth = np.argmin(np.abs(results["active_sets"] - len(true_nonzero)))
+        print(f"  最接近真实稀疏度的penalty: {results['penalties'][closest_to_truth]:.1f} "
+              f"({results['active_sets'][closest_to_truth]} 个特征)")
+    
+    return results
+
+
+# ==============================================================================
+# Main
+# ==============================================================================
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "2":
+        # 运行实验2
+        print("运行实验2：fit_uni 的 negative_penalty 调参")
+        print()
+        
+        results = experiment2_negative_penalty_tuning(
+            n_samples=300,
+            n_features=15,
+            sparsity=4,
+            signal_strength=2.0,
+            penalty_range=(0, 100),
+            n_points=6,
+            n_lmdas=40,
+            save_path="experiment2_penalty_tuning.png",
+            verbose=True
+        )
+    elif len(sys.argv) > 1 and sys.argv[1] == "3":
+        # 运行实验3
+        print("运行实验3：negative_penalty 对支持集的影响分析")
+        print()
+        
+        results = experiment3_active_set_analysis(
+            n_samples=200,
+            n_features=10,
+            sparsity=3,
+            signal_strength=2.0,
+            penalty_range=(0, 100),
+            n_points=6,
+            fixed_lambda=None,  # 自动选择中等lambda
+            save_path="experiment3_active_set_analysis.png",
+            verbose=True
+        )
+    else:
+        # 默认运行实验1
+        print("示例：运行 fit_uni 和 fit_unilasso 的对比实验")
+        print("数据模型: k-稀疏高斯线性回归")
+        print()
+        
+        unilasso_res, uni_res = run_comparison_experiment(
+            n_samples=500,
+            n_features=10,
+            sparsity=3,
+            signal_strength=2.0,
+            test_size=0.3,
+            random_state=42,
+            n_lmdas=40,
             negative_penalty=10.0,
             save_path="experiment1_comparison.png",
             verbose=True
